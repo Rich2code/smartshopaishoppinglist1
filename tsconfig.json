@@ -15,7 +15,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
-    "jsx": "react-照顧",
+    "jsx": "react-jsx",
     "jsxImportSource": "react"
   },
   "include": ["**/*.ts", "**/*.tsx"],
