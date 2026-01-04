@@ -14,26 +14,52 @@ export class GeminiError extends Error {
   }
 }
 
+// Global request queue to prevent slamming the API and hitting rate limits
+let requestQueue: Promise<any> = Promise.resolve();
+const REQUEST_GAP = 1200; // 1.2s gap between starting requests
+
 /**
- * Handles API calls with basic retry logic and detailed error parsing.
+ * Throttles execution to stay within rate limits.
  */
-async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T> {
+async function throttle() {
+  const currentQueue = requestQueue;
+  // Fix: resolver must accept an optional value to match the Promise resolve signature (value: any) => void
+  let resolver: (value?: any) => void;
+  requestQueue = new Promise(resolve => { resolver = resolve; });
+  
+  await currentQueue;
+  // Wait a bit after the previous request started
+  await new Promise(resolve => setTimeout(resolve, REQUEST_GAP));
+  resolver!();
+}
+
+/**
+ * Handles API calls with robust retry logic and exponential backoff.
+ */
+async function handleApiCall<T>(call: () => Promise<T>, retries = 3, backoff = 2500): Promise<T> {
   try {
+    // Throttling to prevent 429s from concurrent calls
+    if (retries === 3) await throttle();
+    
     return await call();
   } catch (error: any) {
     const status = error?.status || error?.error?.code;
     const message = error?.message || "Unknown API error";
 
-    // If it's a transient server error (500, 503, 504) and we have retries left, wait and try again.
-    if ((status >= 500 || status === 0) && retries > 0) {
-      await new Promise(resolve => setTimeout(resolve, 1000 * (3 - retries)));
-      return handleApiCall(call, retries - 1);
+    // Handle 429 Rate Limit specifically with longer backoff
+    if (status === 429 && retries > 0) {
+      console.warn(`Rate limit hit. Waiting ${backoff}ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, backoff));
+      return handleApiCall(call, retries - 1, backoff * 2);
     }
 
-    // Specialized error messages based on status codes
-    if (status === 429) {
-      throw new GeminiError("Rate limit reached. Please wait 60 seconds.", 429);
+    // Handle transient server errors (500, 503, etc)
+    if ((status >= 500 || status === 0) && retries > 0) {
+      await new Promise(resolve => setTimeout(resolve, backoff));
+      return handleApiCall(call, retries - 1, backoff * 1.5);
     }
+
+    // Specialized error messages
     if (status === 403) {
       throw new GeminiError("API Key permissions issue or Quota exceeded.", 403);
     }
@@ -46,7 +72,8 @@ async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T>
  * Gets a fresh instance of the AI client.
  */
 function getAI() {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+  // Fix: Use process.env.API_KEY directly as per guidelines
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
 }
 
 export async function refineItem(itemName: string): Promise<{ 
@@ -91,7 +118,7 @@ export async function findTopPriceOptions(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Find top 3 cheapest major retailers for "${itemName}" near ${location.lat}, ${location.lng}.`,
+      contents: `Find top 3 cheapest major retailers for "${itemName}" near ${location.lat}, ${location.lng}. Only real physical stores.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -122,9 +149,9 @@ export async function getStoreBranchDetails(
     const ai = getAI();
     const unitPrompt = unitSystem === 'metric' ? "km" : "mi";
     
-    // NOTE: Maps tool does NOT support responseMimeType or responseSchema.
+    // Fix: Using gemini-flash-lite-latest (2.5 series model) for maps grounding support
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: 'gemini-flash-lite-latest',
       contents: `Find the closest ${shopName} branch to coordinates ${location.lat}, ${location.lng}. 
       Give me a concise branch name for display (e.g. "Upminster Aldi" or "Romford Tesco") instead of a full address.
       Return the answer in this EXACT format only:
@@ -139,7 +166,6 @@ export async function getStoreBranchDetails(
     });
 
     const text = response.text || "";
-    // Robust parsing for the requested format
     const branchMatch = text.match(/BRANCH:\s*(.*)/i);
     const distanceMatch = text.match(/DISTANCE:\s*(.*)/i);
 
@@ -155,7 +181,7 @@ export async function getCoordsFromLocation(location: string): Promise<LocationS
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Coords for "${location}".`,
+      contents: `Latitude and longitude for "${location}".`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -180,7 +206,7 @@ export async function getPriceAtShop(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}.`,
+      contents: `Numerical price only for "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",

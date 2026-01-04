@@ -5,6 +5,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SmartShop Minimalist</title>
+    <script>
+        // Global shim for process.env to prevent ReferenceErrors in environments without a build step
+        window.process = window.process || { env: {} };
+        
+        // Basic error reporting to help debug "blank page" issues
+        window.onerror = function(message, source, lineno, colno, error) {
+            console.error("Global Error Caught:", message, "at", source, ":", lineno);
+            if (window.location.protocol === 'file:') {
+                alert("WARNING: ES Modules (like this app) do not work when opened as a local file (file://). Please use a local web server (e.g., Live Server or http-server).");
+            }
+        };
+    </script>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,6 +29,19 @@
         }
         .animate-pulse-subtle {
           animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        ::-webkit-scrollbar {
+          width: 6px;
+        }
+        ::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+          background: #cbd5e1;
+          border-radius: 10px;
+        }
+        .dark ::-webkit-scrollbar-thumb {
+          background: #334155;
         }
     </style>
 <script type="importmap">
@@ -32,5 +57,6 @@
 </head>
 <body class="bg-slate-50 text-slate-900">
     <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
 </body>
 </html>
