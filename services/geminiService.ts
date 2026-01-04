@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Type } from "@google/genai";
 import { LocationState, PriceOption, UnitSystem } from "../types";
 
@@ -23,7 +22,7 @@ const REQUEST_GAP = 1200; // 1.2s gap between starting requests
  */
 async function throttle() {
   const currentQueue = requestQueue;
-  // Fix: resolver must accept an optional value to match the Promise resolve signature (value: any) => void
+  // resolver must accept an optional value to match the Promise resolve signature (value: any) => void
   let resolver: (value?: any) => void;
   requestQueue = new Promise(resolve => { resolver = resolve; });
   
@@ -72,7 +71,7 @@ async function handleApiCall<T>(call: () => Promise<T>, retries = 3, backoff = 2
  * Gets a fresh instance of the AI client.
  */
 function getAI() {
-  // Fix: Use process.env.API_KEY directly as per guidelines
+  // Use process.env.API_KEY directly as per guidelines
   return new GoogleGenAI({ apiKey: process.env.API_KEY });
 }
 
@@ -149,9 +148,9 @@ export async function getStoreBranchDetails(
     const ai = getAI();
     const unitPrompt = unitSystem === 'metric' ? "km" : "mi";
     
-    // Fix: Using gemini-flash-lite-latest (2.5 series model) for maps grounding support
+    // Updated to gemini-2.5-flash as Maps grounding is only supported in Gemini 2.5 series models
     const response = await ai.models.generateContent({
-      model: 'gemini-flash-lite-latest',
+      model: 'gemini-2.5-flash',
       contents: `Find the closest ${shopName} branch to coordinates ${location.lat}, ${location.lng}. 
       Give me a concise branch name for display (e.g. "Upminster Aldi" or "Romford Tesco") instead of a full address.
       Return the answer in this EXACT format only:
