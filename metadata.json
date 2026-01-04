@@ -1,0 +1,7 @@
+{
+  "name": "SmartShop Minimalist",
+  "description": "A minimalist shopping list with AI-powered autocorrect, emoji suggestions, and real-time local price comparisons to find the best deals near you.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
