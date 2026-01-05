@@ -1,28 +1,26 @@
 import { defineConfig, loadEnv } from 'vite';
-// Explicitly import process to fix "Property 'cwd' does not exist on type 'Process'" error
 import process from 'node:process';
 
 export default defineConfig(({ mode }) => {
-  // Load env file based on `mode`. 
-  // We use '' as the third argument to load variables without the VITE_ prefix.
   const env = loadEnv(mode, process.cwd(), '');
   
-  // Vercel sometimes provides environment variables directly on process.env 
-  // during the build process even if they aren't in a .env file.
+  // Vercel provides vars via process.env during build.
+  // Vite loads them via loadEnv for local development.
   const apiKey = env.API_KEY || process.env.API_KEY;
+
+  if (!apiKey && mode === 'production') {
+    console.warn('WARNING: API_KEY is not defined in the environment. The app will fail to make AI requests.');
+  }
 
   return {
     define: {
-      // This globally replaces 'process.env.API_KEY' with the actual string in your code.
+      // This is the CRITICAL part for browser apps.
+      // It replaces every instance of process.env.API_KEY with the actual string.
       'process.env.API_KEY': JSON.stringify(apiKey)
     },
     build: {
       outDir: 'dist',
-      sourcemap: false, // Cleaner production builds
       minify: 'esbuild'
-    },
-    server: {
-      port: 3000
     }
   };
 });
