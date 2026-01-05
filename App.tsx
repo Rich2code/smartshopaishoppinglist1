@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ShoppingItem, LocationState, Theme, AppSettings, UnitSystem } from './types';
 import { refineItem, findTopPriceOptions, getCoordsFromLocation, GeminiError } from './services/geminiService';
@@ -15,8 +14,8 @@ const App: React.FC = () => {
   const [showSettings, setShowSettings] = useState(false);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
+  const [configError, setConfigError] = useState<string | null>(null);
   
-  // Track if items or settings have changed to invalidate cached results
   const [lastCalculationFingerprint, setLastCalculationFingerprint] = useState<string>('');
   const [cachedRankedShops, setCachedRankedShops] = useState<any[] | null>(null);
 
@@ -30,7 +29,14 @@ const App: React.FC = () => {
   
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Generate a fingerprint of current state that affects pricing/routing
+  // Check for API key on mount
+  useEffect(() => {
+    const key = process.env.API_KEY;
+    if (!key || key === "undefined") {
+      setConfigError("API_KEY is missing from environment variables. Please check your Vercel settings.");
+    }
+  }, []);
+
   const currentFingerprint = useMemo(() => {
     const readyItems = items.filter(i => i.status === 'ready').map(i => i.id + i.name).sort().join('|');
     const locKey = location ? `${location.lat.toFixed(4)},${location.lng.toFixed(4)}` : 'none';
@@ -114,8 +120,7 @@ const App: React.FC = () => {
   };
 
   const handleProcessingError = (id: string, error: any) => {
-    console.error("Processing error:", error);
-    const errorMessage = error instanceof GeminiError ? error.message : "API Request failed. Try again.";
+    const errorMessage = error instanceof GeminiError ? error.message : "Request failed. Try again.";
     setItems(prev => prev.map(i => i.id === id ? { 
       ...i, 
       status: 'error', 
@@ -188,6 +193,11 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen transition-colors duration-300 bg-slate-50 dark:bg-slate-950">
+      {configError && (
+        <div className="bg-red-600 text-white p-2 text-center text-xs font-bold sticky top-0 z-[100] animate-pulse">
+          ⚠️ CONFIG ERROR: {configError}
+        </div>
+      )}
       <div className="max-w-2xl mx-auto flex flex-col px-4 pt-8 pb-32 md:pt-12">
         <header className="mb-8 flex flex-col items-center relative">
           <button onClick={() => setShowSettings(true)} className="absolute right-0 top-0 p-3 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors bg-white dark:bg-slate-800 rounded-full shadow-sm">

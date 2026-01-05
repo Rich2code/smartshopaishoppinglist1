@@ -10,9 +10,9 @@ export class GeminiError extends Error {
   }
 }
 
-// Throttling mechanism
+// Throttling mechanism to prevent 429 errors during bulk item addition
 let requestQueue: Promise<any> = Promise.resolve();
-const MIN_GAP = 1000; 
+const MIN_GAP = 1200; 
 
 async function throttle() {
   const currentQueue = requestQueue;
@@ -29,6 +29,7 @@ async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T>
     return await call();
   } catch (error: any) {
     const status = error?.status || error?.error?.code;
+    // Retry on rate limits or server errors
     if ((status === 429 || status >= 500) && retries > 0) {
       await new Promise(r => setTimeout(r, 2000));
       return handleApiCall(call, retries - 1);
@@ -38,15 +39,13 @@ async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T>
 }
 
 function getAI() {
-  // Directly accessing the string injected by Vite
   const apiKey = process.env.API_KEY;
-  if (!apiKey) {
-    throw new GeminiError("API Key is missing. Please check your environment variables.", 401);
+  if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
+    throw new GeminiError("API Key is not configured correctly in Vercel environment variables.", 401);
   }
   return new GoogleGenAI({ apiKey });
 }
 
-// Fix: Implement and export getCoordsFromLocation to resolve the missing import error in App.tsx
 export async function getCoordsFromLocation(locationString: string): Promise<LocationState | null> {
   return handleApiCall(async () => {
     const ai = getAI();
@@ -72,7 +71,7 @@ export async function getCoordsFromLocation(locationString: string): Promise<Loc
         return { lat: data.lat, lng: data.lng };
       }
     } catch (e) {
-      console.error("Failed to parse coordinates from Gemini response", e);
+      console.error("Failed to parse coordinates", e);
     }
     return null;
   });
@@ -117,7 +116,7 @@ export async function findTopPriceOptions(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-pro-preview',
-      contents: `Current prices for "${itemName}" near ${location.lat}, ${location.lng}. Major local supermarkets only.`,
+      contents: `Current real-time prices for "${itemName}" near ${location.lat}, ${location.lng}. Major local physical supermarkets only.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -149,7 +148,7 @@ export async function getStoreBranchDetails(
     const unit = unitSystem === 'metric' ? "km" : "mi";
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: `Nearest ${shopName} to ${location.lat}, ${location.lng}. Return BRANCH and DISTANCE in ${unit}.`,
+      contents: `Nearest ${shopName} to coordinates ${location.lat}, ${location.lng}. Return BRANCH name and DISTANCE in ${unit}.`,
       config: {
         tools: [{ googleMaps: {} }],
         toolConfig: {
@@ -178,7 +177,7 @@ export async function getPriceAtShop(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. Number only.`,
+      contents: `Current price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. Numerical value only.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
