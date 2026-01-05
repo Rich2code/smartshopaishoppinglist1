@@ -1,6 +1,13 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { LocationState, PriceOption, UnitSystem } from "../types";
 
+// Fix for TypeScript "Cannot find name 'process'" during build
+declare const process: {
+  env: {
+    API_KEY: string;
+  };
+};
+
 export class GeminiError extends Error {
   status?: number;
   constructor(message: string, status?: number) {
@@ -12,7 +19,7 @@ export class GeminiError extends Error {
 
 // Throttling mechanism to prevent 429 errors during bulk item addition
 let requestQueue: Promise<any> = Promise.resolve();
-const MIN_GAP = 1200; 
+const MIN_GAP = 1500; // Increased gap to be safer with free tier quotas
 
 async function throttle() {
   const currentQueue = requestQueue;
@@ -23,25 +30,31 @@ async function throttle() {
   resolver!();
 }
 
-async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T> {
+async function handleApiCall<T>(call: () => Promise<T>, retries = 1): Promise<T> {
   try {
-    if (retries === 2) await throttle();
+    await throttle();
     return await call();
   } catch (error: any) {
-    const status = error?.status || error?.error?.code;
-    // Retry on rate limits or server errors
-    if ((status === 429 || status >= 500) && retries > 0) {
+    const status = error?.status || error?.error?.code || 500;
+    const message = error?.message || "";
+    
+    // Explicitly handle Quota Exceeded
+    if (status === 429 || message.toLowerCase().includes("quota") || message.toLowerCase().includes("rate limit")) {
+      throw new GeminiError("API Quota Exceeded. Please try again in a few minutes or check billing.", 429);
+    }
+
+    if (status >= 500 && retries > 0) {
       await new Promise(r => setTimeout(r, 2000));
       return handleApiCall(call, retries - 1);
     }
-    throw new GeminiError(error?.message || "AI Service Error", status);
+    throw new GeminiError(message || "AI Service Error", status);
   }
 }
 
 function getAI() {
   const apiKey = process.env.API_KEY;
   if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
-    throw new GeminiError("API Key is not configured correctly in Vercel environment variables.", 401);
+    throw new GeminiError("API Key is missing. Check Vercel Environment Variables.", 401);
   }
   return new GoogleGenAI({ apiKey });
 }

@@ -1,8 +1,15 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { ShoppingItem, LocationState, Theme, AppSettings, UnitSystem } from './types';
+import { ShoppingItem, LocationState, AppSettings } from './types';
 import { refineItem, findTopPriceOptions, getCoordsFromLocation, GeminiError } from './services/geminiService';
 import ShoppingItemCard from './components/ShoppingItemCard';
 import SummaryModal from './components/SummaryModal';
+
+// Fix for TypeScript "Cannot find name 'process'" during build
+declare const process: {
+  env: {
+    API_KEY: string;
+  };
+};
 
 const App: React.FC = () => {
   const [items, setItems] = useState<ShoppingItem[]>([]);
@@ -31,9 +38,13 @@ const App: React.FC = () => {
 
   // Check for API key on mount
   useEffect(() => {
-    const key = process.env.API_KEY;
-    if (!key || key === "undefined") {
-      setConfigError("API_KEY is missing from environment variables. Please check your Vercel settings.");
+    try {
+      const key = process.env.API_KEY;
+      if (!key || key === "undefined" || key === "") {
+        setConfigError("API_KEY missing in Environment Variables.");
+      }
+    } catch (e) {
+      setConfigError("Build environment error: process.env not found.");
     }
   }, []);
 
@@ -102,7 +113,7 @@ const App: React.FC = () => {
       const currentLoc = settings.manualLocation || location;
       if (currentLoc) {
         const topOptions = await findTopPriceOptions(name, currentLoc);
-        const cheapest = topOptions[0] || { shop: "Unknown", price: 0, currency: "£" };
+        const cheapest = topOptions[0] || { shop: "Unknown", price: 0, currency: settings.currency };
         setItems(prev => prev.map(i => i.id === id ? { 
           ...i, 
           topOptions: topOptions,
@@ -120,7 +131,9 @@ const App: React.FC = () => {
   };
 
   const handleProcessingError = (id: string, error: any) => {
-    const errorMessage = error instanceof GeminiError ? error.message : "Request failed. Try again.";
+    const isQuota = error instanceof GeminiError && error.status === 429;
+    const errorMessage = isQuota ? "Daily Quota Reached. Please wait." : (error?.message || "Error processing item.");
+    
     setItems(prev => prev.map(i => i.id === id ? { 
       ...i, 
       status: 'error', 
@@ -195,7 +208,7 @@ const App: React.FC = () => {
     <div className="min-h-screen transition-colors duration-300 bg-slate-50 dark:bg-slate-950">
       {configError && (
         <div className="bg-red-600 text-white p-2 text-center text-xs font-bold sticky top-0 z-[100] animate-pulse">
-          ⚠️ CONFIG ERROR: {configError}
+          ⚠️ {configError}
         </div>
       )}
       <div className="max-w-2xl mx-auto flex flex-col px-4 pt-8 pb-32 md:pt-12">
