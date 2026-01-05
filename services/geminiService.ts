@@ -1,7 +1,7 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { LocationState, PriceOption, UnitSystem } from "../types";
 
-// Fix for TypeScript "Cannot find name 'process'" during build
+// Explicit global type for process.env to satisfy TypeScript build
 declare const process: {
   env: {
     API_KEY: string;
@@ -17,44 +17,52 @@ export class GeminiError extends Error {
   }
 }
 
-// Throttling mechanism to prevent 429 errors during bulk item addition
+// Stricter request queue to avoid 429 Quota Exceeded errors
 let requestQueue: Promise<any> = Promise.resolve();
-const MIN_GAP = 1500; // Increased gap to be safer with free tier quotas
+const BASE_DELAY = 2500; // 2.5 seconds between requests for safety
 
 async function throttle() {
   const currentQueue = requestQueue;
   let resolver: (value?: any) => void;
   requestQueue = new Promise(resolve => { resolver = resolve; });
   await currentQueue;
-  await new Promise(resolve => setTimeout(resolve, MIN_GAP));
+  await new Promise(resolve => setTimeout(resolve, BASE_DELAY));
   resolver!();
 }
 
-async function handleApiCall<T>(call: () => Promise<T>, retries = 1): Promise<T> {
+async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T> {
   try {
     await throttle();
     return await call();
   } catch (error: any) {
-    const status = error?.status || error?.error?.code || 500;
-    const message = error?.message || "";
+    console.error("Gemini API Error:", error);
     
-    // Explicitly handle Quota Exceeded
-    if (status === 429 || message.toLowerCase().includes("quota") || message.toLowerCase().includes("rate limit")) {
-      throw new GeminiError("API Quota Exceeded. Please try again in a few minutes or check billing.", 429);
+    // Attempt to extract status from various error formats
+    const status = error?.status || error?.error?.code || (error?.message?.includes('429') ? 429 : 500);
+    const message = error?.message || "AI Error";
+
+    if (status === 429) {
+      if (retries > 0) {
+        console.warn(`Quota hit. Retrying in 10s... (${retries} left)`);
+        await new Promise(r => setTimeout(r, 10000));
+        return handleApiCall(call, retries - 1);
+      }
+      throw new GeminiError("Daily limit reached. Try again in a minute.", 429);
     }
 
     if (status >= 500 && retries > 0) {
-      await new Promise(r => setTimeout(r, 2000));
+      await new Promise(r => setTimeout(r, 3000));
       return handleApiCall(call, retries - 1);
     }
-    throw new GeminiError(message || "AI Service Error", status);
+    
+    throw new GeminiError(message, status);
   }
 }
 
 function getAI() {
   const apiKey = process.env.API_KEY;
-  if (!apiKey || apiKey === "undefined" || apiKey.length < 5) {
-    throw new GeminiError("API Key is missing. Check Vercel Environment Variables.", 401);
+  if (!apiKey || apiKey === "undefined") {
+    throw new GeminiError("API Key missing. Check environment variables.", 401);
   }
   return new GoogleGenAI({ apiKey });
 }
@@ -64,7 +72,7 @@ export async function getCoordsFromLocation(locationString: string): Promise<Loc
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Provide the latitude and longitude for the location: "${locationString}". Return JSON only.`,
+      contents: `Find lat/lng for: "${locationString}". Return JSON only.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -80,13 +88,10 @@ export async function getCoordsFromLocation(locationString: string): Promise<Loc
     
     try {
       const data = JSON.parse(response.text || "{}");
-      if (typeof data.lat === 'number' && typeof data.lng === 'number') {
-        return { lat: data.lat, lng: data.lng };
-      }
+      return { lat: data.lat, lng: data.lng };
     } catch (e) {
-      console.error("Failed to parse coordinates", e);
+      return null;
     }
-    return null;
   });
 }
 
@@ -101,7 +106,7 @@ export async function refineItem(itemName: string): Promise<{
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Analyze: "${itemName}". Give name, emoji, and isVague (true if it needs a specific brand/type).`,
+      contents: `Analyze grocery item: "${itemName}". Return JSON: {name, emoji, isVague, options[], example}. isVague=true if multiple types exist.`,
       config: {
         responseMimeType: "application/json",
         responseSchema: {
@@ -127,9 +132,10 @@ export async function findTopPriceOptions(
 ): Promise<PriceOption[]> {
   return handleApiCall(async () => {
     const ai = getAI();
+    // Using flash for price lookup too to save quota, switch to pro only if needed
     const response = await ai.models.generateContent({
-      model: 'gemini-3-pro-preview',
-      contents: `Current real-time prices for "${itemName}" near ${location.lat}, ${location.lng}. Major local physical supermarkets only.`,
+      model: 'gemini-3-flash-preview',
+      contents: `Find current prices for "${itemName}" near ${location.lat}, ${location.lng} in local stores. Return JSON array of objects with {shop, price, currency}.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",
@@ -161,7 +167,7 @@ export async function getStoreBranchDetails(
     const unit = unitSystem === 'metric' ? "km" : "mi";
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: `Nearest ${shopName} to coordinates ${location.lat}, ${location.lng}. Return BRANCH name and DISTANCE in ${unit}.`,
+      contents: `Nearest ${shopName} to ${location.lat}, ${location.lng}. Return BRANCH: [name] and DISTANCE: [value] ${unit}.`,
       config: {
         tools: [{ googleMaps: {} }],
         toolConfig: {
@@ -190,7 +196,7 @@ export async function getPriceAtShop(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Current price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. Numerical value only.`,
+      contents: `Price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. JSON: {price: number}.`,
       config: {
         tools: [{ googleSearch: {} }],
         responseMimeType: "application/json",

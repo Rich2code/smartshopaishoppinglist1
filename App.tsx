@@ -4,7 +4,7 @@ import { refineItem, findTopPriceOptions, getCoordsFromLocation, GeminiError } f
 import ShoppingItemCard from './components/ShoppingItemCard';
 import SummaryModal from './components/SummaryModal';
 
-// Fix for TypeScript "Cannot find name 'process'" during build
+// Explicit global type for process.env to satisfy TypeScript build
 declare const process: {
   env: {
     API_KEY: string;
@@ -22,6 +22,7 @@ const App: React.FC = () => {
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [isQuotaFull, setIsQuotaFull] = useState(false);
   
   const [lastCalculationFingerprint, setLastCalculationFingerprint] = useState<string>('');
   const [cachedRankedShops, setCachedRankedShops] = useState<any[] | null>(null);
@@ -38,13 +39,9 @@ const App: React.FC = () => {
 
   // Check for API key on mount
   useEffect(() => {
-    try {
-      const key = process.env.API_KEY;
-      if (!key || key === "undefined" || key === "") {
-        setConfigError("API_KEY missing in Environment Variables.");
-      }
-    } catch (e) {
-      setConfigError("Build environment error: process.env not found.");
+    const key = process.env.API_KEY;
+    if (!key || key === "undefined" || key === "") {
+      setConfigError("Missing API_KEY in Environment Variables.");
     }
   }, []);
 
@@ -90,6 +87,7 @@ const App: React.FC = () => {
     setItems(prev => prev.map(i => i.id === id ? { ...i, status: 'correcting', error: undefined } : i));
     try {
       const refined = await refineItem(name);
+      setIsQuotaFull(false);
       if (refined.isVague && refined.options) {
         setItems(prev => prev.map(i => i.id === id ? { 
           ...i, 
@@ -113,6 +111,7 @@ const App: React.FC = () => {
       const currentLoc = settings.manualLocation || location;
       if (currentLoc) {
         const topOptions = await findTopPriceOptions(name, currentLoc);
+        setIsQuotaFull(false);
         const cheapest = topOptions[0] || { shop: "Unknown", price: 0, currency: settings.currency };
         setItems(prev => prev.map(i => i.id === id ? { 
           ...i, 
@@ -132,7 +131,9 @@ const App: React.FC = () => {
 
   const handleProcessingError = (id: string, error: any) => {
     const isQuota = error instanceof GeminiError && error.status === 429;
-    const errorMessage = isQuota ? "Daily Quota Reached. Please wait." : (error?.message || "Error processing item.");
+    if (isQuota) setIsQuotaFull(true);
+    
+    const errorMessage = isQuota ? "Daily Limit Reached." : (error?.message || "Error.");
     
     setItems(prev => prev.map(i => i.id === id ? { 
       ...i, 
@@ -211,6 +212,12 @@ const App: React.FC = () => {
           ⚠️ {configError}
         </div>
       )}
+      {isQuotaFull && !configError && (
+        <div className="bg-amber-500 text-white p-2 text-center text-[10px] font-black uppercase tracking-widest sticky top-0 z-[100]">
+          ⚡ API Rate Limit Reached - Pausing for 60s...
+        </div>
+      )}
+      
       <div className="max-w-2xl mx-auto flex flex-col px-4 pt-8 pb-32 md:pt-12">
         <header className="mb-8 flex flex-col items-center relative">
           <button onClick={() => setShowSettings(true)} className="absolute right-0 top-0 p-3 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors bg-white dark:bg-slate-800 rounded-full shadow-sm">
@@ -266,8 +273,12 @@ const App: React.FC = () => {
 
         {items.length > 0 && (
           <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-sm px-4">
-            <button onClick={() => setShowSummary(true)} disabled={readyItemsCount === 0} className={`w-full py-5 rounded-3xl font-black text-lg shadow-2xl flex items-center justify-center gap-3 transition-all transform active:scale-95 ${readyItemsCount > 0 ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}`}>
-              {readyItemsCount < items.length ? <><div className="w-5 h-5 border-2 border-slate-400 border-t-white rounded-full animate-spin"></div>Comparing...</> : <><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>Strategy</>}
+            <button 
+              onClick={() => setShowSummary(true)} 
+              disabled={readyItemsCount === 0 || isQuotaFull} 
+              className={`w-full py-5 rounded-3xl font-black text-lg shadow-2xl flex items-center justify-center gap-3 transition-all transform active:scale-95 ${readyItemsCount > 0 && !isQuotaFull ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}`}
+            >
+              {readyItemsCount < items.length && !isQuotaFull ? <><div className="w-5 h-5 border-2 border-slate-400 border-t-white rounded-full animate-spin"></div>Comparing...</> : <><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>Strategy</>}
             </button>
           </div>
         )}
