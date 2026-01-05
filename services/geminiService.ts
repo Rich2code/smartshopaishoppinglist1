@@ -11,30 +11,35 @@ declare const process: {
 export class GeminiError extends Error {
   status?: number;
   isRateLimit: boolean;
-  constructor(message: string, status?: number) {
+  isDaily: boolean;
+
+  constructor(message: string, status?: number, isDaily: boolean = false) {
     super(message);
     this.name = "GeminiError";
     this.status = status;
     this.isRateLimit = status === 429;
+    this.isDaily = isDaily;
   }
 }
 
-// Stricter request queue to avoid 429 Quota Exceeded errors
+// Stricter request queue to avoid 429 errors
+// Search grounding has very strict rate limits on the free tier.
 let requestQueue: Promise<any> = Promise.resolve();
-const BASE_DELAY = 3000; // Increased to 3 seconds for better free-tier stability
+const BASE_DELAY = 4000; // 4 seconds base delay
+const SEARCH_DELAY = 8000; // 8 seconds delay for search tools
 
-async function throttle() {
+async function throttle(isSearch: boolean = false) {
   const currentQueue = requestQueue;
   let resolver: (value?: any) => void;
   requestQueue = new Promise(resolve => { resolver = resolve; });
   await currentQueue;
-  await new Promise(resolve => setTimeout(resolve, BASE_DELAY));
+  await new Promise(resolve => setTimeout(resolve, isSearch ? SEARCH_DELAY : BASE_DELAY));
   resolver!();
 }
 
-async function handleApiCall<T>(call: () => Promise<T>, retries = 1): Promise<T> {
+async function handleApiCall<T>(call: () => Promise<T>, isSearch: boolean = false, retries = 1): Promise<T> {
   try {
-    await throttle();
+    await throttle(isSearch);
     return await call();
   } catch (error: any) {
     console.error("Gemini API Error details:", error);
@@ -43,25 +48,26 @@ async function handleApiCall<T>(call: () => Promise<T>, retries = 1): Promise<T>
     const message = error?.message || "";
 
     if (status === 429) {
-      // Check if message implies daily quota vs per-minute rate limit
-      const isDailyQuota = message.toLowerCase().includes("daily") || message.toLowerCase().includes("quota");
+      // "Quota" in Google APIs often refers to RPM (minute limits), not just daily limits.
+      // We only assume "Daily" if the message specifically mentions "daily" or "day".
+      const isExplicitlyDaily = message.toLowerCase().includes("daily") || message.toLowerCase().includes("per day");
       
-      if (retries > 0 && !isDailyQuota) {
-        console.warn(`Rate limit hit. Retrying in 12s...`);
-        await new Promise(r => setTimeout(r, 12000));
-        return handleApiCall(call, retries - 1);
+      if (retries > 0 && !isExplicitlyDaily) {
+        console.warn(`Rate limit hit. Retrying with longer backoff...`);
+        await new Promise(r => setTimeout(r, 15000));
+        return handleApiCall(call, isSearch, retries - 1);
       }
       
-      const friendlyMessage = isDailyQuota 
-        ? "Daily API quota exhausted. Try again tomorrow." 
-        : "Too many requests. Please wait 60 seconds.";
+      const friendlyMessage = isExplicitlyDaily 
+        ? "Daily API limit reached. Try again in 24 hours." 
+        : "Temporary rate limit reached. Please wait 60 seconds.";
       
-      throw new GeminiError(friendlyMessage, 429);
+      throw new GeminiError(friendlyMessage, 429, isExplicitlyDaily);
     }
 
     if (status >= 500 && retries > 0) {
-      await new Promise(r => setTimeout(r, 4000));
-      return handleApiCall(call, retries - 1);
+      await new Promise(r => setTimeout(r, 5000));
+      return handleApiCall(call, isSearch, retries - 1);
     }
     
     throw new GeminiError(message || "AI Service Error", status);
@@ -101,7 +107,7 @@ export async function getCoordsFromLocation(locationString: string): Promise<Loc
     } catch (e) {
       return null;
     }
-  });
+  }, false);
 }
 
 export async function refineItem(itemName: string): Promise<{ 
@@ -132,7 +138,7 @@ export async function refineItem(itemName: string): Promise<{
       },
     });
     return JSON.parse(response.text || "{}");
-  });
+  }, false);
 }
 
 export async function findTopPriceOptions(
@@ -143,26 +149,24 @@ export async function findTopPriceOptions(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Find current prices for "${itemName}" near ${location.lat}, ${location.lng} in local stores. Return JSON array of objects with {shop, price, currency}.`,
+      // Guidelines: DO NOT set responseMimeType or responseSchema when using googleSearch.
+      // Ask the model to format the text output instead.
+      contents: `Find current prices for "${itemName}" near ${location.lat}, ${location.lng} in major local physical supermarkets. Return ONLY a JSON array of objects with {shop, price, currency}. Try to find at least 3 different shops if possible.`,
       config: {
         tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.ARRAY,
-          items: {
-            type: Type.OBJECT,
-            properties: {
-              shop: { type: Type.STRING },
-              price: { type: Type.NUMBER },
-              currency: { type: Type.STRING },
-            },
-            required: ["shop", "price", "currency"],
-          }
-        },
       },
     });
-    return JSON.parse(response.text || "[]");
-  });
+    
+    const text = response.text || "[]";
+    // Extract JSON array from text in case the model adds extra words
+    const jsonMatch = text.match(/\[.*\]/s);
+    try {
+      return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+    } catch (e) {
+      console.error("Failed to parse search prices:", text);
+      return [];
+    }
+  }, true);
 }
 
 export async function getStoreBranchDetails(
@@ -192,7 +196,7 @@ export async function getStoreBranchDetails(
       branchName: branchMatch ? branchMatch[1].trim() : `${shopName}`,
       distance: distanceMatch ? distanceMatch[1].trim() : "Nearby"
     };
-  });
+  }, false);
 }
 
 export async function getPriceAtShop(
@@ -204,18 +208,14 @@ export async function getPriceAtShop(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: `Price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. JSON: {price: number}.`,
+      // Guidelines: DO NOT set responseMimeType or responseSchema when using googleSearch.
+      contents: `Exact current price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. Return ONLY the price as a number, e.g. 2.99.`,
       config: {
         tools: [{ googleSearch: {} }],
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: { price: { type: Type.NUMBER } },
-          required: ["price"],
-        },
       },
     });
-    const data = JSON.parse(response.text || "{}");
-    return data.price || 0;
-  });
+    const text = response.text || "0";
+    const priceMatch = text.match(/\d+(\.\d+)?/);
+    return priceMatch ? parseFloat(priceMatch[0]) : 0;
+  }, true);
 }

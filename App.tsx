@@ -4,12 +4,25 @@ import { refineItem, findTopPriceOptions, getCoordsFromLocation, GeminiError } f
 import ShoppingItemCard from './components/ShoppingItemCard';
 import SummaryModal from './components/SummaryModal';
 
-// Explicit global type for process.env to satisfy TypeScript build
+// Explicit global type for process.env and aistudio
 declare const process: {
   env: {
     API_KEY: string;
   };
 };
+
+declare global {
+  // Define AIStudio interface to avoid conflicts with global declarations
+  interface AIStudio {
+    hasSelectedApiKey: () => Promise<boolean>;
+    openSelectKey: () => Promise<void>;
+  }
+
+  interface Window {
+    // Properties provided by the environment should typically be readonly
+    readonly aistudio: AIStudio;
+  }
+}
 
 const App: React.FC = () => {
   const [items, setItems] = useState<ShoppingItem[]>([]);
@@ -23,6 +36,7 @@ const App: React.FC = () => {
   const [selectionMode, setSelectionMode] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
   const [quotaStatus, setQuotaStatus] = useState<'none' | 'rate-limit' | 'daily-exhausted'>('none');
+  const [hasPaidKey, setHasPaidKey] = useState(false);
   
   const [lastCalculationFingerprint, setLastCalculationFingerprint] = useState<string>('');
   const [cachedRankedShops, setCachedRankedShops] = useState<any[] | null>(null);
@@ -37,13 +51,30 @@ const App: React.FC = () => {
   
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Check for API key on mount
+  // Check for API key and Paid status on mount
   useEffect(() => {
     const key = process.env.API_KEY;
     if (!key || key === "undefined" || key === "") {
-      setConfigError("Missing API_KEY in Environment Variables.");
+      setConfigError("Missing API_KEY. Please ensure it is set in environment.");
     }
+    checkPaidKey();
   }, []);
+
+  const checkPaidKey = async () => {
+    if (window.aistudio && typeof window.aistudio.hasSelectedApiKey === 'function') {
+      const hasKey = await window.aistudio.hasSelectedApiKey();
+      setHasPaidKey(hasKey);
+    }
+  };
+
+  const handleUpgradeKey = async () => {
+    if (window.aistudio && typeof window.aistudio.openSelectKey === 'function') {
+      await window.aistudio.openSelectKey();
+      // Assume success as per instructions to avoid race conditions
+      setHasPaidKey(true);
+      setQuotaStatus('none');
+    }
+  };
 
   const currentFingerprint = useMemo(() => {
     const readyItems = items.filter(i => i.status === 'ready').map(i => i.id + i.name).sort().join('|');
@@ -130,16 +161,15 @@ const App: React.FC = () => {
   };
 
   const handleProcessingError = (id: string, error: any) => {
-    const isQuota = error instanceof GeminiError && error.status === 429;
-    if (isQuota) {
-      const isDaily = error.message.toLowerCase().includes("daily");
-      setQuotaStatus(isDaily ? 'daily-exhausted' : 'rate-limit');
+    const isQuotaError = error instanceof GeminiError && error.status === 429;
+    if (isQuotaError) {
+      setQuotaStatus(error.isDaily ? 'daily-exhausted' : 'rate-limit');
     }
     
     setItems(prev => prev.map(i => i.id === id ? { 
       ...i, 
       status: 'error', 
-      error: error?.message || "Error." 
+      error: error?.message || "Something went wrong." 
     } : i));
   };
 
@@ -214,8 +244,11 @@ const App: React.FC = () => {
         </div>
       )}
       {quotaStatus !== 'none' && !configError && (
-        <div className={`${quotaStatus === 'rate-limit' ? 'bg-amber-500' : 'bg-red-600'} text-white p-2 text-center text-[10px] font-black uppercase tracking-widest sticky top-0 z-[100] shadow-md`}>
-          {quotaStatus === 'rate-limit' ? '⚡ Rate Limit Reached - Please wait 60s' : '🚫 Daily API Quota Exhausted'}
+        <div className={`${quotaStatus === 'rate-limit' ? 'bg-amber-500' : 'bg-red-600'} text-white p-2 text-center text-[10px] font-black uppercase tracking-widest sticky top-0 z-[100] shadow-md flex items-center justify-center gap-2`}>
+          <span>{quotaStatus === 'rate-limit' ? '⚡ Rate Limit Hit - Pause for 60s' : '🚫 API Quota Empty'}</span>
+          {!hasPaidKey && (
+            <button onClick={() => setShowSettings(true)} className="underline decoration-white/50 hover:decoration-white transition-all ml-1">Upgrade to avoid limits</button>
+          )}
         </div>
       )}
       
@@ -224,7 +257,10 @@ const App: React.FC = () => {
           <button onClick={() => setShowSettings(true)} className="absolute right-0 top-0 p-3 text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors bg-white dark:bg-slate-800 rounded-full shadow-sm">
             <svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           </button>
-          <h1 className="text-4xl font-black tracking-tighter flex items-center gap-2 text-slate-900 dark:text-slate-100">SmartShop<span className="text-indigo-600">.</span></h1>
+          <h1 className="text-4xl font-black tracking-tighter flex items-center gap-2 text-slate-900 dark:text-slate-100">
+            SmartShop<span className="text-indigo-600">.</span>
+            {hasPaidKey && <span className="text-[10px] bg-indigo-600 text-white px-2 py-0.5 rounded-full uppercase tracking-tighter align-top mt-1">Unlimited</span>}
+          </h1>
           <p className="text-slate-400 dark:text-slate-500 font-medium text-sm uppercase tracking-widest mt-1">Minimalist Intelligence</p>
         </header>
 
@@ -273,13 +309,13 @@ const App: React.FC = () => {
         </div>
 
         {items.length > 0 && (
-          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-sm px-4">
+          <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-sm px-4">
             <button 
               onClick={() => setShowSummary(true)} 
-              disabled={readyItemsCount === 0 || quotaStatus === 'daily-exhausted'} 
-              className={`w-full py-5 rounded-3xl font-black text-lg shadow-2xl flex items-center justify-center gap-3 transition-all transform active:scale-95 ${readyItemsCount > 0 && quotaStatus !== 'daily-exhausted' ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}`}
+              disabled={readyItemsCount === 0 || (quotaStatus === 'daily-exhausted' && !hasPaidKey)} 
+              className={`w-full py-5 rounded-3xl font-black text-lg shadow-2xl flex items-center justify-center gap-3 transition-all transform active:scale-95 ${readyItemsCount > 0 && (quotaStatus !== 'daily-exhausted' || hasPaidKey) ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}`}
             >
-              {readyItemsCount < items.length && quotaStatus !== 'daily-exhausted' ? <><div className="w-5 h-5 border-2 border-slate-400 border-t-white rounded-full animate-spin"></div>Comparing...</> : <><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>Strategy</>}
+              {readyItemsCount < items.length && (quotaStatus !== 'daily-exhausted' || hasPaidKey) ? <><div className="w-5 h-5 border-2 border-slate-400 border-t-white rounded-full animate-spin"></div>Comparing...</> : <><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>Strategy</>}
             </button>
           </div>
         )}
@@ -292,11 +328,29 @@ const App: React.FC = () => {
                 <button onClick={() => setShowSettings(false)} className="text-slate-400 hover:text-slate-600"><svg className="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M6 18L18 6M6 6l12 12" strokeWidth={3} /></svg></button>
               </div>
               <div className="space-y-8">
+                
+                {/* Quota Section */}
+                <div className="bg-indigo-50 dark:bg-indigo-900/20 p-5 rounded-2xl border border-indigo-100 dark:border-indigo-800/40">
+                  <label className="text-[11px] font-black text-indigo-600 dark:text-indigo-400 uppercase tracking-widest block mb-2">Quota & Power</label>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 leading-relaxed">
+                    If you are hitting "Daily Limit" errors, it's because Search and Maps tools are limited on the free tier. Link a paid project to unlock high-volume searches.
+                  </p>
+                  <button 
+                    onClick={handleUpgradeKey} 
+                    className={`w-full py-4 rounded-xl text-sm font-black transition-all flex items-center justify-center gap-2 ${hasPaidKey ? 'bg-emerald-500 text-white' : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-lg'}`}
+                  >
+                    {hasPaidKey ? <><svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" /></svg> Paid Key Active</> : '🚀 Upgrade to Paid Quota'}
+                  </button>
+                  {!hasPaidKey && (
+                    <a href="https://ai.google.dev/gemini-api/docs/billing" target="_blank" rel="noopener noreferrer" className="block text-center text-[10px] text-indigo-400 mt-3 font-bold uppercase hover:underline">View Pricing Docs</a>
+                  )}
+                </div>
+
                 <div>
                    <label className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Location</label>
                    <div className="flex flex-col gap-3">
                     <input type="text" placeholder="City or Postcode..." className="w-full bg-slate-50 dark:bg-slate-800 border-2 border-slate-100 dark:border-slate-700 rounded-2xl py-4 px-5 text-sm dark:text-white" value={settings.locationString} onChange={(e) => setSettings({...settings, locationString: e.target.value})} />
-                    <button onClick={handleUpdateLocation} className="py-3 bg-indigo-600 text-white rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-colors">Set Location</button>
+                    <button onClick={handleUpdateLocation} className="py-3 bg-slate-900 dark:bg-indigo-600 text-white rounded-2xl text-xs font-bold hover:bg-indigo-700 transition-colors">Set Location</button>
                   </div>
                 </div>
 
