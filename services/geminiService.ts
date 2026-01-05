@@ -10,16 +10,18 @@ declare const process: {
 
 export class GeminiError extends Error {
   status?: number;
+  isRateLimit: boolean;
   constructor(message: string, status?: number) {
     super(message);
     this.name = "GeminiError";
     this.status = status;
+    this.isRateLimit = status === 429;
   }
 }
 
 // Stricter request queue to avoid 429 Quota Exceeded errors
 let requestQueue: Promise<any> = Promise.resolve();
-const BASE_DELAY = 2500; // 2.5 seconds between requests for safety
+const BASE_DELAY = 3000; // Increased to 3 seconds for better free-tier stability
 
 async function throttle() {
   const currentQueue = requestQueue;
@@ -30,32 +32,39 @@ async function throttle() {
   resolver!();
 }
 
-async function handleApiCall<T>(call: () => Promise<T>, retries = 2): Promise<T> {
+async function handleApiCall<T>(call: () => Promise<T>, retries = 1): Promise<T> {
   try {
     await throttle();
     return await call();
   } catch (error: any) {
-    console.error("Gemini API Error:", error);
+    console.error("Gemini API Error details:", error);
     
-    // Attempt to extract status from various error formats
     const status = error?.status || error?.error?.code || (error?.message?.includes('429') ? 429 : 500);
-    const message = error?.message || "AI Error";
+    const message = error?.message || "";
 
     if (status === 429) {
-      if (retries > 0) {
-        console.warn(`Quota hit. Retrying in 10s... (${retries} left)`);
-        await new Promise(r => setTimeout(r, 10000));
+      // Check if message implies daily quota vs per-minute rate limit
+      const isDailyQuota = message.toLowerCase().includes("daily") || message.toLowerCase().includes("quota");
+      
+      if (retries > 0 && !isDailyQuota) {
+        console.warn(`Rate limit hit. Retrying in 12s...`);
+        await new Promise(r => setTimeout(r, 12000));
         return handleApiCall(call, retries - 1);
       }
-      throw new GeminiError("Daily limit reached. Try again in a minute.", 429);
+      
+      const friendlyMessage = isDailyQuota 
+        ? "Daily API quota exhausted. Try again tomorrow." 
+        : "Too many requests. Please wait 60 seconds.";
+      
+      throw new GeminiError(friendlyMessage, 429);
     }
 
     if (status >= 500 && retries > 0) {
-      await new Promise(r => setTimeout(r, 3000));
+      await new Promise(r => setTimeout(r, 4000));
       return handleApiCall(call, retries - 1);
     }
     
-    throw new GeminiError(message, status);
+    throw new GeminiError(message || "AI Service Error", status);
   }
 }
 
@@ -132,7 +141,6 @@ export async function findTopPriceOptions(
 ): Promise<PriceOption[]> {
   return handleApiCall(async () => {
     const ai = getAI();
-    // Using flash for price lookup too to save quota, switch to pro only if needed
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
       contents: `Find current prices for "${itemName}" near ${location.lat}, ${location.lng} in local stores. Return JSON array of objects with {shop, price, currency}.`,

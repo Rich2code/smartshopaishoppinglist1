@@ -22,7 +22,7 @@ const App: React.FC = () => {
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [configError, setConfigError] = useState<string | null>(null);
-  const [isQuotaFull, setIsQuotaFull] = useState(false);
+  const [quotaStatus, setQuotaStatus] = useState<'none' | 'rate-limit' | 'daily-exhausted'>('none');
   
   const [lastCalculationFingerprint, setLastCalculationFingerprint] = useState<string>('');
   const [cachedRankedShops, setCachedRankedShops] = useState<any[] | null>(null);
@@ -87,7 +87,7 @@ const App: React.FC = () => {
     setItems(prev => prev.map(i => i.id === id ? { ...i, status: 'correcting', error: undefined } : i));
     try {
       const refined = await refineItem(name);
-      setIsQuotaFull(false);
+      setQuotaStatus('none');
       if (refined.isVague && refined.options) {
         setItems(prev => prev.map(i => i.id === id ? { 
           ...i, 
@@ -111,7 +111,7 @@ const App: React.FC = () => {
       const currentLoc = settings.manualLocation || location;
       if (currentLoc) {
         const topOptions = await findTopPriceOptions(name, currentLoc);
-        setIsQuotaFull(false);
+        setQuotaStatus('none');
         const cheapest = topOptions[0] || { shop: "Unknown", price: 0, currency: settings.currency };
         setItems(prev => prev.map(i => i.id === id ? { 
           ...i, 
@@ -131,14 +131,15 @@ const App: React.FC = () => {
 
   const handleProcessingError = (id: string, error: any) => {
     const isQuota = error instanceof GeminiError && error.status === 429;
-    if (isQuota) setIsQuotaFull(true);
-    
-    const errorMessage = isQuota ? "Daily Limit Reached." : (error?.message || "Error.");
+    if (isQuota) {
+      const isDaily = error.message.toLowerCase().includes("daily");
+      setQuotaStatus(isDaily ? 'daily-exhausted' : 'rate-limit');
+    }
     
     setItems(prev => prev.map(i => i.id === id ? { 
       ...i, 
       status: 'error', 
-      error: errorMessage 
+      error: error?.message || "Error." 
     } : i));
   };
 
@@ -212,9 +213,9 @@ const App: React.FC = () => {
           ⚠️ {configError}
         </div>
       )}
-      {isQuotaFull && !configError && (
-        <div className="bg-amber-500 text-white p-2 text-center text-[10px] font-black uppercase tracking-widest sticky top-0 z-[100]">
-          ⚡ API Rate Limit Reached - Pausing for 60s...
+      {quotaStatus !== 'none' && !configError && (
+        <div className={`${quotaStatus === 'rate-limit' ? 'bg-amber-500' : 'bg-red-600'} text-white p-2 text-center text-[10px] font-black uppercase tracking-widest sticky top-0 z-[100] shadow-md`}>
+          {quotaStatus === 'rate-limit' ? '⚡ Rate Limit Reached - Please wait 60s' : '🚫 Daily API Quota Exhausted'}
         </div>
       )}
       
@@ -275,10 +276,10 @@ const App: React.FC = () => {
           <div className="fixed bottom-8 left-1/2 -translate-x-1/2 w-full max-w-sm px-4">
             <button 
               onClick={() => setShowSummary(true)} 
-              disabled={readyItemsCount === 0 || isQuotaFull} 
-              className={`w-full py-5 rounded-3xl font-black text-lg shadow-2xl flex items-center justify-center gap-3 transition-all transform active:scale-95 ${readyItemsCount > 0 && !isQuotaFull ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}`}
+              disabled={readyItemsCount === 0 || quotaStatus === 'daily-exhausted'} 
+              className={`w-full py-5 rounded-3xl font-black text-lg shadow-2xl flex items-center justify-center gap-3 transition-all transform active:scale-95 ${readyItemsCount > 0 && quotaStatus !== 'daily-exhausted' ? 'bg-indigo-600 text-white' : 'bg-slate-200 dark:bg-slate-800 text-slate-400 cursor-not-allowed'}`}
             >
-              {readyItemsCount < items.length && !isQuotaFull ? <><div className="w-5 h-5 border-2 border-slate-400 border-t-white rounded-full animate-spin"></div>Comparing...</> : <><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>Strategy</>}
+              {readyItemsCount < items.length && quotaStatus !== 'daily-exhausted' ? <><div className="w-5 h-5 border-2 border-slate-400 border-t-white rounded-full animate-spin"></div>Comparing...</> : <><svg className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>Strategy</>}
             </button>
           </div>
         )}
