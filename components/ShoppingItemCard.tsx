@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { ShoppingItem } from '../types';
 
@@ -27,7 +26,7 @@ const ShoppingItemCard: React.FC<Props> = ({ item, selectionMode, currencySymbol
   return (
     <div className={`bg-white dark:bg-slate-800 p-4 rounded-xl border transition-all duration-200 shadow-sm flex flex-col gap-3 group 
       ${item.isSelected ? 'border-indigo-500 ring-1 ring-indigo-500 bg-indigo-50/30' : 
-        isError ? 'border-red-500 bg-red-50/30 dark:bg-red-900/10 animate-pulse-subtle' : 'border-slate-200 dark:border-slate-700'}`}>
+        isError ? 'border-red-500 bg-red-50/30 dark:bg-red-900/10' : 'border-slate-200 dark:border-slate-700'}`}>
       
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3 flex-1 overflow-hidden">
@@ -48,7 +47,10 @@ const ShoppingItemCard: React.FC<Props> = ({ item, selectionMode, currencySymbol
             </span>
             <div className="flex items-center gap-2 mt-0.5">
               {item.status === 'searching' && (
-                <span className="text-xs text-indigo-500 animate-pulse">Checking prices...</span>
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 bg-indigo-500 rounded-full animate-ping"></div>
+                  <span className="text-[10px] font-bold text-indigo-500 uppercase tracking-tighter">Waiting for Search Slot...</span>
+                </div>
               )}
               {isError && (
                 <span className="text-[10px] font-bold text-red-500 uppercase tracking-tight break-words line-clamp-2">
@@ -68,14 +70,14 @@ const ShoppingItemCard: React.FC<Props> = ({ item, selectionMode, currencySymbol
           {isError && (
             <button 
               onClick={() => onRetry(item.id)}
-              className="bg-red-500 text-white text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg hover:bg-red-600 active:scale-95"
+              className="bg-red-500 text-white text-[10px] font-black uppercase tracking-widest px-3 py-1.5 rounded-lg hover:bg-red-600 active:scale-95 shadow-sm"
             >
               Retry
             </button>
           )}
           <button 
             onClick={() => onDelete(item.id)}
-            className="text-slate-400 hover:text-red-50 p-2 rounded-lg transition-colors"
+            className="text-slate-400 hover:text-red-500 p-2 rounded-lg transition-colors"
           >
             <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
@@ -93,7 +95,7 @@ const ShoppingItemCard: React.FC<Props> = ({ item, selectionMode, currencySymbol
                 <button
                   key={opt}
                   onClick={() => onOptionPick(item.id, opt)}
-                  className="text-xs bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 px-3 py-1.5 rounded-full border border-indigo-200"
+                  className="text-xs bg-white dark:bg-slate-700 text-indigo-600 dark:text-indigo-300 px-3 py-1.5 rounded-full border border-indigo-200 shadow-sm"
                 >
                   {opt}
                 </button>

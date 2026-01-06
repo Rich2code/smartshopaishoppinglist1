@@ -23,16 +23,18 @@ export class GeminiError extends Error {
 }
 
 // Stricter request queue to avoid 429 errors
-// Search grounding has very strict rate limits on the free tier.
+// Search grounding on the free tier is restricted to ~2 RPM (Requests Per Minute)
+// A 32-second delay ensures we never exceed 2 requests per 60 seconds.
 let requestQueue: Promise<any> = Promise.resolve();
-const BASE_DELAY = 4000; // 4 seconds base delay
-const SEARCH_DELAY = 8000; // 8 seconds delay for search tools
+const BASE_DELAY = 3000; // 3 seconds base delay for non-search tasks
+const SEARCH_DELAY = 32000; // 32 seconds delay specifically for Search Grounding
 
 async function throttle(isSearch: boolean = false) {
   const currentQueue = requestQueue;
   let resolver: (value?: any) => void;
   requestQueue = new Promise(resolve => { resolver = resolve; });
   await currentQueue;
+  // If it's a search, we wait significantly longer to respect the 2 RPM limit
   await new Promise(resolve => setTimeout(resolve, isSearch ? SEARCH_DELAY : BASE_DELAY));
   resolver!();
 }
@@ -48,19 +50,18 @@ async function handleApiCall<T>(call: () => Promise<T>, isSearch: boolean = fals
     const message = error?.message || "";
 
     if (status === 429) {
-      // "Quota" in Google APIs often refers to RPM (minute limits), not just daily limits.
-      // We only assume "Daily" if the message specifically mentions "daily" or "day".
       const isExplicitlyDaily = message.toLowerCase().includes("daily") || message.toLowerCase().includes("per day");
       
       if (retries > 0 && !isExplicitlyDaily) {
         console.warn(`Rate limit hit. Retrying with longer backoff...`);
-        await new Promise(r => setTimeout(r, 15000));
+        // Force a 60s wait on a 429 error
+        await new Promise(r => setTimeout(r, 60000));
         return handleApiCall(call, isSearch, retries - 1);
       }
       
       const friendlyMessage = isExplicitlyDaily 
         ? "Daily API limit reached. Try again in 24 hours." 
-        : "Temporary rate limit reached. Please wait 60 seconds.";
+        : "Free Tier Rate Limit: Please wait 60 seconds before retrying.";
       
       throw new GeminiError(friendlyMessage, 429, isExplicitlyDaily);
     }
@@ -149,8 +150,6 @@ export async function findTopPriceOptions(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      // Guidelines: DO NOT set responseMimeType or responseSchema when using googleSearch.
-      // Ask the model to format the text output instead.
       contents: `Find current prices for "${itemName}" near ${location.lat}, ${location.lng} in major local physical supermarkets. Return ONLY a JSON array of objects with {shop, price, currency}. Try to find at least 3 different shops if possible.`,
       config: {
         tools: [{ googleSearch: {} }],
@@ -158,7 +157,6 @@ export async function findTopPriceOptions(
     });
     
     const text = response.text || "[]";
-    // Extract JSON array from text in case the model adds extra words
     const jsonMatch = text.match(/\[.*\]/s);
     try {
       return JSON.parse(jsonMatch ? jsonMatch[0] : text);
@@ -208,7 +206,6 @@ export async function getPriceAtShop(
     const ai = getAI();
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      // Guidelines: DO NOT set responseMimeType or responseSchema when using googleSearch.
       contents: `Exact current price of "${itemName}" at ${shopName} near ${location.lat}, ${location.lng}. Return ONLY the price as a number, e.g. 2.99.`,
       config: {
         tools: [{ googleSearch: {} }],

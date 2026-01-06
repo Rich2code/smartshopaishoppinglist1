@@ -1,7 +1,6 @@
-
 import React, { useEffect, useState } from 'react';
 import { ShoppingItem, LocationState, UnitSystem } from '../types';
-import { getPriceAtShop, getStoreBranchDetails } from '../services/geminiService';
+import { getStoreBranchDetails } from '../services/geminiService';
 
 interface Props {
   items: ShoppingItem[];
@@ -35,44 +34,18 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
   const [progress, setProgress] = useState(0);
   const [rankedShops, setRankedShops] = useState<RankedShop[]>([]);
   const [activeIndex, setActiveIndex] = useState(0);
-  
-  // By default, the strategy comparison is EXTENDED as requested
   const [showAlternatives, setShowAlternatives] = useState(true);
-  
-  // Detail accordions
   const [showReceipt, setShowReceipt] = useState(false);
   const [showCheapestPerStore, setShowCheapestPerStore] = useState(false);
 
   useEffect(() => {
     let timer: any;
 
-    const updateProgressSmoothly = (target: number, duration: number = 600, callback?: () => void) => {
-      const start = progress;
-      const range = target - start;
-      const startTime = performance.now();
-
-      const animate = (now: number) => {
-        const elapsed = now - startTime;
-        const p = Math.min(elapsed / duration, 1);
-        const currentVal = Math.floor(start + range * p);
-        setProgress(currentVal);
-        if (p < 1) {
-          timer = requestAnimationFrame(animate);
-        } else if (callback) {
-          callback();
-        }
-      };
-      timer = requestAnimationFrame(animate);
-    };
-
     if (cachedData) {
-      // FAST MOCK LOADING
       setRankedShops(cachedData);
-      updateProgressSmoothly(100, 800, () => {
-        setTimeout(() => setLoading(false), 200);
-      });
+      setLoading(false);
+      setProgress(100);
     } else {
-      // REAL FULL CALCULATION
       const getNumericDistance = (distStr: string) => {
         const match = distStr.match(/(\d+(\.\d+)?)/);
         return match ? parseFloat(match[1]) : Infinity;
@@ -80,7 +53,7 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
 
       const calculateSummary = async () => {
         setLoading(true);
-        setProgress(5);
+        setProgress(10);
         
         const readyItems = items.filter(i => i.status === 'ready');
         if (readyItems.length === 0) {
@@ -88,50 +61,53 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
           return;
         }
 
-        const shopWeights: Record<string, number> = {};
+        // 1. Find all shops we have data for
+        const allCandidateShops = new Set<string>();
         readyItems.forEach(item => {
-          item.topOptions?.forEach((opt, idx) => {
-            const weight = 3 - idx;
-            shopWeights[opt.shop] = (shopWeights[opt.shop] || 0) + weight;
-          });
+          item.topOptions?.forEach(opt => allCandidateShops.add(opt.shop));
         });
 
-        const sortedCandidateShops = Object.entries(shopWeights)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 5)
-          .map(entry => ({ name: entry[0], weight: entry[1] }));
+        // 2. Rank shops by how many items they have cheapest
+        const shopCoverage: Record<string, number> = {};
+        allCandidateShops.forEach(shop => {
+          shopCoverage[shop] = readyItems.reduce((acc, item) => {
+            const hasShop = item.topOptions?.some(o => o.shop === shop);
+            return acc + (hasShop ? 1 : 0);
+          }, 0);
+        });
 
-        let calculatedRanked: RankedShop[] = [];
+        const sortedShops = Object.keys(shopCoverage)
+          .sort((a, b) => shopCoverage[b] - shopCoverage[a])
+          .slice(0, 3);
 
-        for (let sIdx = 0; sIdx < sortedCandidateShops.length; sIdx++) {
-          const candidate = sortedCandidateShops[sIdx];
-          const currentShopName = candidate.name;
-          
-          setProgress(Math.floor(20 + (sIdx * (80 / sortedCandidateShops.length))));
+        const calculatedRanked: RankedShop[] = [];
 
-          const branchInfo = await getStoreBranchDetails(currentShopName, location, distanceUnit);
+        for (let sIdx = 0; sIdx < sortedShops.length; sIdx++) {
+          const shopName = sortedShops[sIdx];
+          setProgress(Math.floor(20 + (sIdx * (60 / sortedShops.length))));
+
+          // Fetch distance (one call per shop is usually fine)
+          const branchInfo = await getStoreBranchDetails(shopName, location, distanceUnit);
           const numericDist = getNumericDistance(branchInfo.distance);
-          
+
           let shopTotal = 0;
           let itemsAtBestCount = 0;
           let shopPotentialSavings = 0;
           const shopReceipt: RankedShop['receipt'] = [];
           const shopDiffs: RankedShop['savingsDiff'] = [];
 
-          for (let i = 0; i < readyItems.length; i++) {
-            const item = readyItems[i];
+          readyItems.forEach(item => {
+            // Find price at this shop if we have it, else use average/estimated
             const absoluteCheapest = item.topOptions?.[0] || { price: 0, shop: "N/A" };
-            const inTopOptions = item.topOptions?.find(o => o.shop === currentShopName);
+            const shopOption = item.topOptions?.find(o => o.shop === shopName);
             
-            let priceAtThisShop: number;
-            if (inTopOptions) {
-              priceAtThisShop = inTopOptions.price;
-            } else {
-              priceAtThisShop = await getPriceAtShop(item.name, currentShopName, location);
-            }
+            // If we don't have price for this item at this shop, use the average of other shops
+            const priceAtThisShop = shopOption ? shopOption.price : 
+              (item.topOptions && item.topOptions.length > 0 ? 
+                item.topOptions.reduce((a,b) => a + b.price, 0) / item.topOptions.length : (item.price || 0));
 
             shopTotal += priceAtThisShop;
-            const isCheapestHere = currentShopName === absoluteCheapest.shop;
+            const isCheapestHere = shopName === absoluteCheapest.shop;
             if (isCheapestHere) itemsAtBestCount++;
 
             shopReceipt.push({
@@ -153,15 +129,15 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                 });
               }
             }
-          }
+          });
 
           calculatedRanked.push({
-            shopName: currentShopName,
+            shopName,
             branchName: branchInfo.branchName,
             distance: branchInfo.distance,
             numericDistance: numericDist,
             totalPrice: shopTotal,
-            weight: candidate.weight,
+            weight: shopCoverage[shopName],
             itemsAtBest: itemsAtBestCount,
             isClosest: false,
             isCheapest: false,
@@ -172,13 +148,12 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
           });
         }
 
+        // Sorting by a mix of price and distance preference
         calculatedRanked.sort((a, b) => {
           if (a.isWithinPreference && !b.isWithinPreference) return -1;
           if (!a.isWithinPreference && b.isWithinPreference) return 1;
           return a.totalPrice - b.totalPrice;
         });
-
-        calculatedRanked = calculatedRanked.slice(0, 3);
 
         if (calculatedRanked.length > 0) {
           let minDist = Infinity;
@@ -223,7 +198,6 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
   return (
     <div className="fixed inset-0 bg-slate-900/70 backdrop-blur-md z-[60] flex items-center justify-center p-4">
       <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh] border border-slate-200 dark:border-slate-800">
-        {/* Header */}
         <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10">
           <div>
             <h2 className="text-2xl font-black text-slate-800 dark:text-slate-100 tracking-tight">Strategy Dashboard</h2>
@@ -234,7 +208,6 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
           </button>
         </div>
 
-        {/* Content */}
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
           {loading ? (
             <div className="flex flex-col items-center justify-center py-20">
@@ -257,13 +230,11 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                 <div className="text-3xl font-black text-slate-800 dark:text-slate-100">{progress}%</div>
               </div>
               <p className="text-slate-500 dark:text-slate-400 font-bold animate-pulse tracking-wide text-center">
-                {cachedData ? "Refreshing your routes..." : "Analyzing routes & local stock..."}
+                Crunching route efficiency...
               </p>
             </div>
           ) : currentStrategy ? (
             <div className="space-y-6 animate-in fade-in duration-500">
-              
-              {/* Blue Recommendation Box - EXTENDED by default */}
               <div className="bg-indigo-600 text-white p-6 rounded-3xl shadow-lg relative overflow-hidden transition-all duration-300">
                 <div className="relative z-10">
                   <div className="flex justify-between items-start">
@@ -289,24 +260,11 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                         Get Directions
                       </button>
                     </div>
-                    {rankedShops.length > 1 && (
-                      <button 
-                        onClick={() => setShowAlternatives(!showAlternatives)}
-                        className="bg-white/20 hover:bg-white/30 p-2 rounded-xl transition-colors backdrop-blur-sm ml-4 shrink-0"
-                      >
-                        {showAlternatives ? (
-                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M20 12H4" /></svg>
-                        ) : (
-                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M12 4v16m8-8H4" /></svg>
-                        )}
-                      </button>
-                    )}
                   </div>
 
-                  {/* Top 3 Comparison - EXTENDED by default */}
                   {showAlternatives && rankedShops.length > 1 && (
                     <div className="mt-4 pt-4 border-t border-white/10 space-y-2 animate-in slide-in-from-top-2">
-                      <p className="text-[10px] font-bold text-indigo-200 uppercase tracking-widest">Compare Strategy Options:</p>
+                      <p className="text-[10px] font-bold text-indigo-200 uppercase tracking-widest">Compare Options:</p>
                       <div className="flex flex-col gap-2">
                         {rankedShops.map((shop, idx) => (
                           <div key={shop.shopName} className="flex gap-2">
@@ -324,13 +282,6 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                               </div>
                               <span className="font-mono text-xs font-black shrink-0">{currencySymbol}{shop.totalPrice.toFixed(2)}</span>
                             </button>
-                            <button 
-                              onClick={() => handleOpenMaps(shop.branchName)}
-                              className={`p-3 rounded-2xl border-2 transition-all ${idx === activeIndex ? 'bg-white border-white text-indigo-600' : 'bg-white/10 border-white/20 text-white'}`}
-                              title="Directions"
-                            >
-                              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
-                            </button>
                           </div>
                         ))}
                       </div>
@@ -339,14 +290,13 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
 
                   <div className="flex justify-between items-end mt-4">
                     <p className="text-indigo-100 text-sm leading-tight opacity-90">
-                      Total projection for all items.
+                      Strategy projection total.
                     </p>
                     <p className="text-3xl font-black">{currencySymbol}{currentStrategy.totalPrice.toFixed(2)}</p>
                   </div>
                 </div>
               </div>
 
-              {/* Trip Shopping List - Collapsed Detail */}
               <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
                 <button 
                   onClick={() => setShowReceipt(!showReceipt)}
@@ -375,7 +325,6 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                 )}
               </div>
 
-              {/* Potential Savings Analysis */}
               {currentStrategy.savingsDiff.length > 0 && (
                 <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden bg-white dark:bg-slate-900 shadow-sm">
                   <button 
@@ -384,7 +333,7 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                   >
                     <span className="font-bold text-orange-800 dark:text-orange-300 text-sm flex items-center gap-2 uppercase tracking-tighter">
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      Savings Trade-offs ({currentStrategy.savingsDiff.length} items)
+                      Savings Trade-offs
                     </span>
                     <span className="bg-white dark:bg-slate-700 p-1 rounded-full shadow-sm text-orange-400">
                       {showCheapestPerStore ? <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M20 12H4" /></svg> : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path d="M12 4v16m8-8H4" /></svg>}
@@ -392,7 +341,7 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                   </button>
                   {showCheapestPerStore && (
                     <div className="p-4 bg-white dark:bg-slate-900 border-t border-slate-100 dark:border-slate-800 space-y-4 animate-in slide-in-from-top-2">
-                      <p className="text-xs text-slate-500 dark:text-slate-400 italic font-medium">By selecting {currentStrategy.branchName}, you are paying <b>{currencySymbol}{currentStrategy.potentialSavings.toFixed(2)}</b> extra vs. multiple separate trips. Here are all items cheaper at other stores:</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 italic font-medium">By picking {currentStrategy.branchName}, you pay <b>{currencySymbol}{currentStrategy.potentialSavings.toFixed(2)}</b> extra vs splitting trips. Here's what's cheaper elsewhere:</p>
                       {currentStrategy.savingsDiff.map((diff, i) => (
                         <div key={i} className="flex items-center justify-between p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-200 dark:border-slate-800">
                           <div className="overflow-hidden">
@@ -401,7 +350,6 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                           </div>
                           <div className="text-right shrink-0">
                             <p className="font-bold text-green-600 dark:text-green-400 text-sm">{currencySymbol}{diff.cheapestPrice.toFixed(2)}</p>
-                            <p className="text-[10px] text-red-400 font-bold leading-none mt-0.5">+ {currencySymbol}{diff.difference.toFixed(2)} here</p>
                           </div>
                         </div>
                       ))}
@@ -409,7 +357,6 @@ const SummaryModal: React.FC<Props> = ({ items, location, currencySymbol, distan
                   )}
                 </div>
               )}
-
             </div>
           ) : null}
         </div>
